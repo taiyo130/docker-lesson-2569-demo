@@ -21,6 +21,9 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 
+# npm ไม่ได้ใช้ตอนรัน — ลบทิ้งเพื่อลดช่องโหว่ (Lab 10)
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
 # ไม่รันด้วย root — image node มี user ชื่อ node ให้แล้ว
 USER node
 EXPOSE 3000

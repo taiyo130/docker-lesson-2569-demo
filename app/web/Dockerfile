@@ -8,6 +8,8 @@ RUN npm run build
 
 # ---------- stage 2: เสิร์ฟไฟล์ static ด้วย nginx ----------
 FROM nginx:1.29-alpine
+# อัปเดต package ของ OS ที่มีช่องโหว่ (Lab 10)
+RUN apk upgrade --no-cache
 # ไปหา API ที่ไหน — เปลี่ยนตอน run ได้ (runtime config) ต่างจาก VITE_* ที่ฝังตอน build
 ENV API_UPSTREAM=api:3000
 # ไฟล์ใน /etc/nginx/templates จะถูกแทนค่า ${ENV} แล้ววางที่ /etc/nginx/conf.d ตอน start

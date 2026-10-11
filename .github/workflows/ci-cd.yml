@@ -65,7 +65,7 @@ jobs:
           image-ref: ${{ steps.image.outputs.name }}:${{ github.sha }}
           severity: CRITICAL,HIGH
           ignore-unfixed: true
-          exit-code: '0'
+          exit-code: '1'
 
   deploy:
     needs: build
