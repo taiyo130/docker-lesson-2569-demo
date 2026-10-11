@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+*.env
+!.env.example
+.DS_Store
+
+# ไฟล์ผู้สอน (มีเฉลยข้อสอบ) — ห้าม commit

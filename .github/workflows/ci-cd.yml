@@ -1,0 +1,113 @@
+# วางไฟล์นี้ที่ .github/workflows/ci-cd.yml ใน repo ของนักศึกษา
+# ตั้งค่าใน GitHub → Settings → Secrets and variables → Actions
+#   Variables: DEPLOY_HOST=76.13.177.240  DEPLOY_PORT=50NN  DEPLOY_USER=student
+#              APP_URL=https://stdNN.cpedev.cloud   (ใช้ smoke test หลัง deploy)
+#   Secrets:   SSH_KEY  (private key ที่ public key อยู่ใน ~/.ssh/authorized_keys บน server)
+# บน server: สร้าง ~/todo/.env ไว้หนึ่งครั้ง (POSTGRES_PASSWORD, WEB_PORT=8080, API_PORT=3000)
+name: ci-cd
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app/api
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/api/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [api, web]
+    steps:
+      - uses: actions/checkout@v7
+      - id: image
+        # ชื่อ image ต้องเป็นตัวพิมพ์เล็ก: ghcr.io/<owner>/<repo>-api
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}-${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        if: github.event_name == 'push'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: app/${{ matrix.service }}
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+            ${{ steps.image.outputs.name }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+      # Lab 10: สแกนช่องโหว่ — เปลี่ยน exit-code เป็น '1' เพื่อให้ pipeline ล้มเมื่อเจอ CRITICAL
+      - uses: aquasecurity/trivy-action@v0.36.0
+        if: github.event_name == 'push'
+        with:
+          image-ref: ${{ steps.image.outputs.name }}:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '0'
+
+  deploy:
+    needs: build
+    # ข้ามขั้น deploy ถ้ายังไม่ได้ตั้งค่า server
+    if: github.event_name == 'push' && vars.DEPLOY_HOST != ''
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: read   # ให้ GITHUB_TOKEN ใช้ pull image บน server ได้
+    env:
+      HOST: ${{ vars.DEPLOY_HOST }}
+      PORT: ${{ vars.DEPLOY_PORT || '22' }}
+      USER: ${{ vars.DEPLOY_USER }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "$PORT" "$HOST" >> ~/.ssh/known_hosts
+      - name: Copy compose.yaml
+        run: |
+          ssh -p "$PORT" "$USER@$HOST" "mkdir -p ~/todo && test -f ~/todo/.env || { echo 'ไม่พบ ~/todo/.env บน server'; exit 1; }"
+          scp -P "$PORT" app/compose.yaml "$USER@$HOST:~/todo/compose.yaml"
+      - name: Login GHCR on server
+        # ส่ง token ทาง stdin — ไม่โผล่ใน command line หรือ log
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | ssh -p "$PORT" "$USER@$HOST" "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
+      - name: Deploy with docker compose
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          ssh -p "$PORT" "$USER@$HOST" "
+            set -e
+            cd ~/todo
+            export TAG='${{ github.sha }}' API_IMAGE='$IMAGE-api' WEB_IMAGE='$IMAGE-web'
+            docker compose pull api web
+            docker compose up -d --no-build --wait
+            docker image prune -f
+          "
+      - name: Smoke test
+        if: vars.APP_URL != ''
+        run: |
+          curl -fsS --retry 5 --retry-delay 3 "${{ vars.APP_URL }}/api/info" | tee info.json
+          grep -q "${{ github.sha }}" info.json
